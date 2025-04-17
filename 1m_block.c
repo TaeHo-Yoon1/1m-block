@@ -127,7 +127,7 @@ void cleanup_hash_table() {
     hash_table = NULL;
 }
 
-int load_domains_from_csv(const char *filename) {
+int load_domains_from_txt(const char *filename) {
     FILE *fp = fopen(filename, "r");
     if (!fp) {
         fprintf(stderr, "Failed to open file: %s\n", filename);
@@ -170,7 +170,7 @@ int load_domains_from_csv(const char *filename) {
     return 1;
 }
 
-int sort_csv_file(const char *input_filename, const char *output_filename) {
+int sort_txt_file(const char *input_filename, const char *output_filename) {
     FILE *check = fopen(output_filename, "r");
     if (check) {
         printf("Sorted file %s already exists, using existing file\n", output_filename);
@@ -178,7 +178,7 @@ int sort_csv_file(const char *input_filename, const char *output_filename) {
         return 1;
     }
     
-    printf("Sorting CSV file %s to %s\n", input_filename, output_filename);
+    printf("Sorting text file %s to %s\n", input_filename, output_filename);
     gettimeofday(&start_time, NULL);
     
     char cmd[512];
@@ -190,10 +190,10 @@ int sort_csv_file(const char *input_filename, const char *output_filename) {
     double sort_time = get_elapsed_time(&start_time, &end_time);
     
     if (result == 0) {
-        printf("Successfully sorted CSV file in %.2f seconds\n", sort_time);
+        printf("Successfully sorted text file in %.2f seconds\n", sort_time);
         return 1;
     } else {
-        fprintf(stderr, "Failed to sort CSV file\n");
+        fprintf(stderr, "Failed to sort text file\n");
         return 0;
     }
 }
@@ -353,20 +353,20 @@ int main(int argc, char **argv)
         char buf[4096] __attribute__ ((aligned));
 
         if (argc != 2) {
-            printf("syntax : 1m_block <csv_file>\n");
-            printf("sample : 1m_block top-1m.csv\n");
+            printf("syntax : 1m-block <site list file>\n");
+            printf("sample : 1m-block top-1m.txt\n");
             return 1;
         }
         
-        const char *csv_file = argv[1];
-        const char *sorted_csv_file = "sortA.csv";
+        const char *txt_file = argv[1];
+        const char *sorted_txt_file = "sortA.txt";
         
         init_hash_table();
         
-        sort_csv_file(csv_file, sorted_csv_file);
+        sort_txt_file(txt_file, sorted_txt_file);
         
-        if (!load_domains_from_csv(sorted_csv_file)) {
-            fprintf(stderr, "Failed to load domains from CSV file\n");
+        if (!load_domains_from_txt(sorted_txt_file)) {
+            fprintf(stderr, "Failed to load domains from text file\n");
             cleanup_hash_table();
             return 1;
         }
