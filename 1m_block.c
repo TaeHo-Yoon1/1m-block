@@ -127,6 +127,66 @@ void cleanup_hash_table() {
     hash_table = NULL;
 }
 
+int convert_csv_to_txt(const char *csv_filename, const char *txt_filename) {
+    FILE *csv_fp = fopen(csv_filename, "r");
+    if (!csv_fp) {
+        fprintf(stderr, "Failed to open CSV file: %s\n", csv_filename);
+        return 0;
+    }
+    
+    FILE *txt_fp = fopen(txt_filename, "w");
+    if (!txt_fp) {
+        fprintf(stderr, "Failed to create TXT file: %s\n", txt_filename);
+        fclose(csv_fp);
+        return 0;
+    }
+    
+    printf("Converting CSV file %s to TXT file %s\n", csv_filename, txt_filename);
+    gettimeofday(&start_time, NULL);
+    
+    char line[MAX_HOST_LEN];
+    char domain[MAX_HOST_LEN];
+    unsigned long lines_converted = 0;
+    
+    while (fgets(line, sizeof(line), csv_fp)) {
+        char *comma = strchr(line, ',');
+        if (comma) {
+            // CSV format with rank,domain
+            strncpy(domain, comma + 1, sizeof(domain) - 1);
+            domain[sizeof(domain) - 1] = '\0';
+            
+            // Remove trailing newline
+            char *newline = strchr(domain, '\n');
+            if (newline) *newline = '\0';
+            
+            // Write only domain to TXT file
+            fprintf(txt_fp, "%s\n", domain);
+        } else {
+            // Just write the line as is
+            fputs(line, txt_fp);
+            // Ensure line ends with newline
+            if (line[strlen(line) - 1] != '\n') {
+                fputc('\n', txt_fp);
+            }
+        }
+        
+        lines_converted++;
+        if (lines_converted % 100000 == 0) {
+            printf("Converted %lu lines...\n", lines_converted);
+        }
+    }
+    
+    gettimeofday(&end_time, NULL);
+    double conversion_time = get_elapsed_time(&start_time, &end_time);
+    
+    printf("Successfully converted %lu lines from CSV to TXT in %.2f seconds\n", 
+           lines_converted, conversion_time);
+    
+    fclose(csv_fp);
+    fclose(txt_fp);
+    return 1;
+}
+
 int load_domains_from_txt(const char *filename) {
     FILE *fp = fopen(filename, "r");
     if (!fp) {
@@ -138,23 +198,19 @@ int load_domains_from_txt(const char *filename) {
     gettimeofday(&start_time, NULL);
     
     char line[MAX_HOST_LEN];
-    char domain[MAX_HOST_LEN];
     
     while (fgets(line, sizeof(line), fp)) {
-        char *comma = strchr(line, ',');
-        if (comma) {
-            strncpy(domain, comma + 1, sizeof(domain) - 1);
-        } else {
-            strncpy(domain, line, sizeof(domain) - 1);
-        }
-        
-        char *newline = strchr(domain, '\n');
+        // Remove trailing newline
+        char *newline = strchr(line, '\n');
         if (newline) *newline = '\0';
         
-        add_host_to_hash(domain);
-        
-        if (total_hosts % 100000 == 0) {
-            printf("Loaded %lu domains...\n", total_hosts);
+        // Skip empty lines
+        if (line[0] != '\0') {
+            add_host_to_hash(line);
+            
+            if (total_hosts % 100000 == 0) {
+                printf("Loaded %lu domains...\n", total_hosts);
+            }
         }
     }
     
@@ -182,7 +238,7 @@ int sort_txt_file(const char *input_filename, const char *output_filename) {
     gettimeofday(&start_time, NULL);
     
     char cmd[512];
-    snprintf(cmd, sizeof(cmd), "sort -t, -k2 %s > %s", input_filename, output_filename);
+    snprintf(cmd, sizeof(cmd), "sort %s > %s", input_filename, output_filename);
     
     int result = system(cmd);
     
@@ -354,19 +410,49 @@ int main(int argc, char **argv)
 
         if (argc != 2) {
             printf("syntax : 1m-block <site list file>\n");
-            printf("sample : 1m-block top-1m.txt\n");
+            printf("sample : 1m-block top-1m.csv\n");
             return 1;
         }
         
-        const char *txt_file = argv[1];
+        const char *input_file = argv[1];
+        const char *converted_txt_file = "converted.txt";
         const char *sorted_txt_file = "sortA.txt";
         
         init_hash_table();
         
-        sort_txt_file(txt_file, sorted_txt_file);
+        // 파일 확장자 확인
+        const char *ext = strrchr(input_file, '.');
+        int is_csv = 0;
         
+        if (ext && strcasecmp(ext, ".csv") == 0) {
+            is_csv = 1;
+            printf("CSV 파일이 감지되었습니다. TXT 파일로 변환합니다.\n");
+            
+            // CSV 파일을 TXT로 변환
+            if (!convert_csv_to_txt(input_file, converted_txt_file)) {
+                fprintf(stderr, "CSV 파일을 TXT 파일로 변환하는데 실패했습니다.\n");
+                cleanup_hash_table();
+                return 1;
+            }
+            
+            // 변환된 TXT 파일 정렬
+            if (!sort_txt_file(converted_txt_file, sorted_txt_file)) {
+                fprintf(stderr, "TXT 파일 정렬에 실패했습니다.\n");
+                cleanup_hash_table();
+                return 1;
+            }
+        } else {
+            // TXT 파일 바로 정렬
+            if (!sort_txt_file(input_file, sorted_txt_file)) {
+                fprintf(stderr, "파일 정렬에 실패했습니다.\n");
+                cleanup_hash_table();
+                return 1;
+            }
+        }
+        
+        // 정렬된 파일에서 도메인 로드
         if (!load_domains_from_txt(sorted_txt_file)) {
-            fprintf(stderr, "Failed to load domains from text file\n");
+            fprintf(stderr, "도메인 로드에 실패했습니다.\n");
             cleanup_hash_table();
             return 1;
         }
