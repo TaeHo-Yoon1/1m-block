@@ -15,133 +15,52 @@
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
 #define MAX_HOST_LEN 256
-#define HASH_TABLE_SIZE 65536
-#define INITIAL_BUCKET_SIZE 8
+#define HASH_SIZE 65536  
 
-typedef struct host_entry {
-    char *host;
-    struct host_entry *next;
-} host_entry_t;
+typedef struct DomainNode {
+    char *domain;              
+    struct DomainNode *next;   
+} DomainNode;
 
-host_entry_t **hash_table = NULL;
-
-unsigned long total_hosts = 0;
-unsigned long hash_collisions = 0;
-unsigned long memory_used = 0;
+struct {
+    DomainNode **table;        
+    unsigned long count;       
+    unsigned long collisions;  
+    unsigned long memory;      
+    double load_time;          
+} HashTable;
 
 struct timeval start_time, end_time;
-double load_time = 0.0;
 
-double get_elapsed_time(struct timeval *start, struct timeval *end) {
+double time_diff(struct timeval *start, struct timeval *end) {
     return (end->tv_sec - start->tv_sec) + 
            (end->tv_usec - start->tv_usec) / 1000000.0;
 }
 
-unsigned int hash_function(const char *host) {
-    unsigned int hash = 0;
-    while (*host) {
-        hash = (hash * 31) + (unsigned char)tolower(*host);
-        host++;
+unsigned int hash(const char *domain) {
+    unsigned int h = 0;
+    while (*domain) {
+        h = (h * 31) + (unsigned char)tolower(*domain);
+        domain++;
     }
-    return hash & (HASH_TABLE_SIZE - 1);
-}
-
-void init_hash_table() {
-    hash_table = (host_entry_t **)calloc(HASH_TABLE_SIZE, sizeof(host_entry_t *));
-    if (!hash_table) {
-        fprintf(stderr, "Failed to allocate memory for hash table\n");
-        exit(1);
-    }
-    memory_used += HASH_TABLE_SIZE * sizeof(host_entry_t *);
-    printf("Initialized hash table with %d buckets, using %.2f MB\n", 
-           HASH_TABLE_SIZE, memory_used / (1024.0 * 1024.0));
-}
-
-void add_host_to_hash(const char *host) {
-    if (!host || !*host) return;
-    
-    unsigned int index = hash_function(host);
-    host_entry_t *entry = (host_entry_t *)malloc(sizeof(host_entry_t));
-    if (!entry) {
-        fprintf(stderr, "Memory allocation failed\n");
-        return;
-    }
-    
-    entry->host = strdup(host);
-    if (!entry->host) {
-        free(entry);
-        fprintf(stderr, "Memory allocation failed\n");
-        return;
-    }
-    
-    memory_used += strlen(host) + 1 + sizeof(host_entry_t);
-    
-    entry->next = hash_table[index];
-    hash_table[index] = entry;
-    
-    if (entry->next) hash_collisions++;
-    total_hosts++;
-}
-
-int is_host_blocked(const char *host) {
-    if (!host || !hash_table) return 0;
-    
-    struct timeval search_start, search_end;
-    gettimeofday(&search_start, NULL);
-    
-    unsigned int index = hash_function(host);
-    host_entry_t *entry = hash_table[index];
-    
-    while (entry) {
-        if (strcasecmp(entry->host, host) == 0) {
-            gettimeofday(&search_end, NULL);
-            double search_time = get_elapsed_time(&search_start, &search_end);
-            printf("Host '%s' found in %.6f seconds\n", host, search_time);
-            return 1;
-        }
-        entry = entry->next;
-    }
-    
-    gettimeofday(&search_end, NULL);
-    double search_time = get_elapsed_time(&search_start, &search_end);
-    printf("Host '%s' not found in hash table (search took %.6f seconds)\n", 
-           host, search_time);
-    
-    return 0;
-}
-
-void cleanup_hash_table() {
-    if (!hash_table) return;
-    
-    for (int i = 0; i < HASH_TABLE_SIZE; i++) {
-        host_entry_t *entry = hash_table[i];
-        while (entry) {
-            host_entry_t *temp = entry;
-            entry = entry->next;
-            free(temp->host);
-            free(temp);
-        }
-    }
-    
-    free(hash_table);
-    hash_table = NULL;
+    return h % HASH_SIZE;
 }
 
 int convert_csv_to_txt(const char *csv_filename, const char *txt_filename) {
     FILE *csv_fp = fopen(csv_filename, "r");
     if (!csv_fp) {
-        fprintf(stderr, "Failed to open CSV file: %s\n", csv_filename);
+        fprintf(stderr, "CSV 파일 열기 실패: %s\n", csv_filename);
         return 0;
     }
     
     FILE *txt_fp = fopen(txt_filename, "w");
     if (!txt_fp) {
-        fprintf(stderr, "Failed to create TXT file: %s\n", txt_filename);
+        fprintf(stderr, "TXT 파일 생성 실패: %s\n", txt_filename);
         fclose(csv_fp);
         return 0;
     }
     
-    printf("Converting CSV file %s to TXT file %s\n", csv_filename, txt_filename);
+    printf("CSV 파일 %s을(를) TXT 파일 %s(으)로 변환 중...\n", csv_filename, txt_filename);
     gettimeofday(&start_time, NULL);
     
     char line[MAX_HOST_LEN];
@@ -151,20 +70,17 @@ int convert_csv_to_txt(const char *csv_filename, const char *txt_filename) {
     while (fgets(line, sizeof(line), csv_fp)) {
         char *comma = strchr(line, ',');
         if (comma) {
-            // CSV format with rank,domain
+            // CSV 형식 (순위,도메인)
             strncpy(domain, comma + 1, sizeof(domain) - 1);
             domain[sizeof(domain) - 1] = '\0';
             
-            // Remove trailing newline
+
             char *newline = strchr(domain, '\n');
             if (newline) *newline = '\0';
             
-            // Write only domain to TXT file
             fprintf(txt_fp, "%s\n", domain);
         } else {
-            // Just write the line as is
             fputs(line, txt_fp);
-            // Ensure line ends with newline
             if (line[strlen(line) - 1] != '\n') {
                 fputc('\n', txt_fp);
             }
@@ -172,15 +88,14 @@ int convert_csv_to_txt(const char *csv_filename, const char *txt_filename) {
         
         lines_converted++;
         if (lines_converted % 100000 == 0) {
-            printf("Converted %lu lines...\n", lines_converted);
+            printf("%lu줄 변환됨...\n", lines_converted);
         }
     }
     
     gettimeofday(&end_time, NULL);
-    double conversion_time = get_elapsed_time(&start_time, &end_time);
+    double conversion_time = time_diff(&start_time, &end_time);
     
-    printf("Successfully converted %lu lines from CSV to TXT in %.2f seconds\n", 
-           lines_converted, conversion_time);
+    printf("변환 완료: %lu줄 (소요 시간: %.2f초)\n", lines_converted, conversion_time);
     
     fclose(csv_fp);
     fclose(txt_fp);
@@ -190,37 +105,31 @@ int convert_csv_to_txt(const char *csv_filename, const char *txt_filename) {
 int load_domains_from_txt(const char *filename) {
     FILE *fp = fopen(filename, "r");
     if (!fp) {
-        fprintf(stderr, "Failed to open file: %s\n", filename);
+        fprintf(stderr, "파일 열기 실패: %s\n", filename);
         return 0;
     }
     
-    printf("Loading domains from %s\n", filename);
+    printf("파일 %s에서 도메인 로딩 중...\n", filename);
     gettimeofday(&start_time, NULL);
     
     char line[MAX_HOST_LEN];
     
     while (fgets(line, sizeof(line), fp)) {
-        // Remove trailing newline
         char *newline = strchr(line, '\n');
         if (newline) *newline = '\0';
         
-        // Skip empty lines
         if (line[0] != '\0') {
-            add_host_to_hash(line);
-            
-            if (total_hosts % 100000 == 0) {
-                printf("Loaded %lu domains...\n", total_hosts);
-            }
+            add_domain(line);
         }
     }
     
     gettimeofday(&end_time, NULL);
-    load_time = get_elapsed_time(&start_time, &end_time);
+    HashTable.load_time = time_diff(&start_time, &end_time);
     
-    printf("Loaded %lu domains in %.2f seconds\n", total_hosts, load_time);
-    printf("Memory used: %.2f MB\n", memory_used / (1024.0 * 1024.0));
-    printf("Hash collisions: %lu (%.2f%%)\n", 
-           hash_collisions, (hash_collisions * 100.0) / total_hosts);
+    printf("도메인 로딩 완료: %lu개 (소요 시간: %.2f초)\n", HashTable.count, HashTable.load_time);
+    printf("메모리 사용량: %.2f MB\n", HashTable.memory / (1024.0 * 1024.0));
+    printf("해시 충돌: %lu회 (충돌률: %.2f%%)\n", 
+           HashTable.collisions, (HashTable.collisions * 100.0) / HashTable.count);
     
     fclose(fp);
     return 1;
@@ -229,12 +138,12 @@ int load_domains_from_txt(const char *filename) {
 int sort_txt_file(const char *input_filename, const char *output_filename) {
     FILE *check = fopen(output_filename, "r");
     if (check) {
-        printf("Sorted file %s already exists, using existing file\n", output_filename);
+        printf("정렬된 파일 %s이(가) 이미 존재합니다. 기존 파일을 사용합니다.\n", output_filename);
         fclose(check);
         return 1;
     }
     
-    printf("Sorting text file %s to %s\n", input_filename, output_filename);
+    printf("파일 %s을(를) 정렬하여 %s에 저장 중...\n", input_filename, output_filename);
     gettimeofday(&start_time, NULL);
     
     char cmd[512];
@@ -243,16 +152,121 @@ int sort_txt_file(const char *input_filename, const char *output_filename) {
     int result = system(cmd);
     
     gettimeofday(&end_time, NULL);
-    double sort_time = get_elapsed_time(&start_time, &end_time);
+    double sort_time = time_diff(&start_time, &end_time);
     
     if (result == 0) {
-        printf("Successfully sorted text file in %.2f seconds\n", sort_time);
+        printf("파일 정렬 완료 (소요 시간: %.2f초)\n", sort_time);
         return 1;
     } else {
-        fprintf(stderr, "Failed to sort text file\n");
+        fprintf(stderr, "파일 정렬 실패\n");
         return 0;
     }
 }
+
+// 해시 테이블 초기화
+void init_hashtable() {
+    HashTable.table = (DomainNode **)calloc(HASH_SIZE, sizeof(DomainNode *));
+    if (!HashTable.table) {
+        fprintf(stderr, "해시 테이블 메모리 할당 실패\n");
+        exit(1);
+    }
+    
+    HashTable.count = 0;
+    HashTable.collisions = 0;
+    HashTable.memory = HASH_SIZE * sizeof(DomainNode *);
+    HashTable.load_time = 0.0;
+    
+    printf("해시 테이블 초기화 완료 (크기: %d, 메모리: %.2f MB)\n", 
+           HASH_SIZE, HashTable.memory / (1024.0 * 1024.0));
+}
+
+// 해시 테이블에 도메인 추가
+void add_domain(const char *domain) {
+    if (!domain || !*domain) return;
+    
+    unsigned int index = hash(domain);
+    
+    DomainNode *new_node = (DomainNode *)malloc(sizeof(DomainNode));
+    if (!new_node) {
+        fprintf(stderr, "메모리 할당 실패\n");
+        return;
+    }
+    
+    
+    new_node->domain = strdup(domain);
+    if (!new_node->domain) {
+        free(new_node);
+        fprintf(stderr, "메모리 할당 실패\n");
+        return;
+    }
+    
+    // 메모리 사용량 업데이트
+    HashTable.memory += strlen(domain) + 1 + sizeof(DomainNode);
+
+    new_node->next = HashTable.table[index];
+    HashTable.table[index] = new_node;
+    
+    // 해시 충돌 발생 여부 확인
+    if (new_node->next) {
+        HashTable.collisions++;
+    }
+    
+    HashTable.count++;
+    
+    if (HashTable.count % 100000 == 0) {
+        printf("현재 %lu개 도메인 로드됨...\n", HashTable.count);
+    }
+}
+
+// 해시 테이블에서 도메인 검색
+int is_blocked_domain(const char *domain) {
+    struct timeval search_start, search_end;
+    gettimeofday(&search_start, NULL);
+    
+    unsigned int index = hash(domain);
+    
+    DomainNode *node = HashTable.table[index];
+    while (node) {
+        if (strcasecmp(node->domain, domain) == 0) {
+            gettimeofday(&search_end, NULL);
+            double search_time = time_diff(&search_start, &search_end);
+            
+            printf("도메인 '%s' 발견 (검색 시간: %.6f초)\n", domain, search_time);
+            return 1;  
+        }
+        node = node->next;
+    }
+    
+    gettimeofday(&search_end, NULL);
+    double search_time = time_diff(&search_start, &search_end);
+    
+    printf("도메인 '%s' 발견되지 않음 (검색 시간: %.6f초)\n", domain, search_time);
+    return 0;  // 발견되지 않음
+}
+
+// 해시 테이블 메모리 정리
+void cleanup_hashtable() {
+    if (!HashTable.table) return;
+    
+    printf("해시 테이블 정리 중...\n");
+    
+    for (int i = 0; i < HASH_SIZE; i++) {
+        DomainNode *node = HashTable.table[i];
+        while (node) {
+            DomainNode *temp = node;
+            node = node->next;
+            free(temp->domain);
+            free(temp);
+        }
+    }
+    
+    free(HashTable.table);
+    HashTable.table = NULL;
+    
+    printf("해시 테이블 정리 완료\n");
+}
+
+
 
 void dump(unsigned char* buf, int size) {
         int i;
@@ -313,10 +327,10 @@ int check_http_host(unsigned char *data, int len) {
                         *port = '\0';
                     }
                     
-                    printf("HTTP Host: %s\n", host);
+                    printf("HTTP 호스트: %s\n", host);
                     
-                    if (is_host_blocked(host)) {
-                        printf("Dropping packet to blocked website: %s\n", host);
+                    if (is_blocked_domain(host)) {
+                        printf("차단된 웹사이트로의 패킷 차단: %s\n", host);
                         return 1;
                     }
                 }
@@ -385,14 +399,14 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg __attribute__((unu
               struct nfq_data *nfa, void *data __attribute__((unused)))
 {
         u_int32_t id = print_pkt(nfa);
-        printf("entering callback\n");
+        printf("콜백 함수 진입\n");
         
         unsigned char *packet_data;
         int packet_len = nfq_get_payload(nfa, &packet_data);
         
         if (packet_len >= 0) {
             if (check_http_host(packet_data, packet_len)) {
-                printf("Dropping packet to harmful website\n");
+                printf("유해 웹사이트로의 패킷 차단\n");
                 return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
             }
         }
@@ -409,8 +423,8 @@ int main(int argc, char **argv)
         char buf[4096] __attribute__ ((aligned));
 
         if (argc != 2) {
-            printf("syntax : 1m-block <site list file>\n");
-            printf("sample : 1m-block top-1m.csv\n");
+            printf("사용법: 1m-block <사이트 목록 파일>\n");
+            printf("예시: 1m-block top-1m.csv\n");
             return 1;
         }
         
@@ -418,7 +432,8 @@ int main(int argc, char **argv)
         const char *converted_txt_file = "converted.txt";
         const char *sorted_txt_file = "sortA.txt";
         
-        init_hash_table();
+        // 해시 테이블 초기화
+        init_hashtable();
         
         // 파일 확장자 확인
         const char *ext = strrchr(input_file, '.');
@@ -431,21 +446,21 @@ int main(int argc, char **argv)
             // CSV 파일을 TXT로 변환
             if (!convert_csv_to_txt(input_file, converted_txt_file)) {
                 fprintf(stderr, "CSV 파일을 TXT 파일로 변환하는데 실패했습니다.\n");
-                cleanup_hash_table();
+                cleanup_hashtable();
                 return 1;
             }
             
             // 변환된 TXT 파일 정렬
             if (!sort_txt_file(converted_txt_file, sorted_txt_file)) {
                 fprintf(stderr, "TXT 파일 정렬에 실패했습니다.\n");
-                cleanup_hash_table();
+                cleanup_hashtable();
                 return 1;
             }
         } else {
             // TXT 파일 바로 정렬
             if (!sort_txt_file(input_file, sorted_txt_file)) {
                 fprintf(stderr, "파일 정렬에 실패했습니다.\n");
-                cleanup_hash_table();
+                cleanup_hashtable();
                 return 1;
             }
         }
@@ -453,29 +468,28 @@ int main(int argc, char **argv)
         // 정렬된 파일에서 도메인 로드
         if (!load_domains_from_txt(sorted_txt_file)) {
             fprintf(stderr, "도메인 로드에 실패했습니다.\n");
-            cleanup_hash_table();
+            cleanup_hashtable();
             return 1;
         }
         
+        printf("Target host to block: %s\n", target_host);
+
         printf("opening library handle\n");
         h = nfq_open();
         if (!h) {
                 fprintf(stderr, "error during nfq_open()\n");
-                cleanup_hash_table();
                 exit(1);
         }
 
         printf("unbinding existing nf_queue handler for AF_INET (if any)\n");
         if (nfq_unbind_pf(h, AF_INET) < 0) {
                 fprintf(stderr, "error during nfq_unbind_pf()\n");
-                cleanup_hash_table();
                 exit(1);
         }
 
         printf("binding nfnetlink_queue as nf_queue handler for AF_INET\n");
         if (nfq_bind_pf(h, AF_INET) < 0) {
                 fprintf(stderr, "error during nfq_bind_pf()\n");
-                cleanup_hash_table();
                 exit(1);
         }
 
@@ -483,14 +497,12 @@ int main(int argc, char **argv)
         qh = nfq_create_queue(h,  0, &cb, NULL);
         if (!qh) {
                 fprintf(stderr, "error during nfq_create_queue()\n");
-                cleanup_hash_table();
                 exit(1);
         }
 
         printf("setting copy_packet mode\n");
         if (nfq_set_mode(qh, NFQNL_COPY_PACKET, 0xffff) < 0) {
                 fprintf(stderr, "can't set packet_copy mode\n");
-                cleanup_hash_table();
                 exit(1);
         }
 
@@ -499,33 +511,33 @@ int main(int argc, char **argv)
         printf("Ready to filter. Run the following command to redirect packets to the queue:\n");
         printf("sudo iptables -A OUTPUT -p tcp --dport 80 -j NFQUEUE --queue-num 0\n");
         printf("sudo iptables -A INPUT -p tcp --sport 80 -j NFQUEUE --queue-num 0\n");
-        printf("Test with: wget http://example.com\n");
 
         for (;;) {
                 if ((rv = recv(fd, buf, sizeof(buf), 0)) >= 0) {
-                        printf("pkt received\n");
+                        printf("패킷 수신\n");
                         nfq_handle_packet(h, buf, rv);
                         continue;
                 }
 
                 if (rv < 0 && errno == ENOBUFS) {
-                        printf("losing packets!\n");
+                        printf("패킷 손실 발생!\n");
                         continue;
                 }
-                perror("recv failed");
+                perror("recv 실패");
                 break;
         }
 
-        printf("unbinding from queue 0\n");
+        printf("큐 0에서 언바인딩\n");
         nfq_destroy_queue(qh);
 
-        printf("unbinding from AF_INET\n");
+        printf("AF_INET에서 언바인딩\n");
         nfq_unbind_pf(h, AF_INET);
 
-        printf("closing library handle\n");
+        printf("라이브러리 핸들 닫기\n");
         nfq_close(h);
         
-        cleanup_hash_table();
+        // 리소스 정리
+        cleanup_hashtable();
 
         exit(0);
 }
